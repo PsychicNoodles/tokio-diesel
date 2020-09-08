@@ -11,9 +11,10 @@ use diesel::{
     Connection,
 };
 use std::{error::Error as StdError, fmt};
-use tokio::task;
+use actix_web::web;
+use actix_web::error::BlockingError;
 
-pub type AsyncResult<R> = Result<R, AsyncError>;
+pub type AsyncResult<R> = Result<R, BlockingError<AsyncError>>;
 
 #[derive(Debug)]
 pub enum AsyncError {
@@ -25,14 +26,14 @@ pub enum AsyncError {
 }
 
 pub trait OptionalExtension<T> {
-    fn optional(self) -> Result<Option<T>, AsyncError>;
+    fn optional(self) -> Result<Option<T>, BlockingError<AsyncError>>;
 }
 
 impl<T> OptionalExtension<T> for AsyncResult<T> {
-    fn optional(self) -> Result<Option<T>, AsyncError> {
+    fn optional(self) -> Result<Option<T>, BlockingError<AsyncError>> {
         match self {
             Ok(value) => Ok(Some(value)),
-            Err(AsyncError::Error(diesel::result::Error::NotFound)) => Ok(None),
+            Err(BlockingError::Error(AsyncError::Error(diesel::result::Error::NotFound))) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -73,10 +74,10 @@ where
     async fn batch_execute_async(&self, query: &str) -> AsyncResult<()> {
         let self_ = self.clone();
         let query = query.to_string();
-        task::block_in_place(move || {
+        web::block(move || {
             let conn = self_.get().map_err(AsyncError::Checkout)?;
             conn.batch_execute(&query).map_err(AsyncError::Error)
-        })
+        }).await
     }
 }
 
@@ -87,13 +88,13 @@ where
 {
     async fn run<R, Func>(&self, f: Func) -> AsyncResult<R>
     where
-        R: Send,
-        Func: FnOnce(&Conn) -> QueryResult<R> + Send;
+        R: Send + 'static,
+        Func: FnOnce(&Conn) -> QueryResult<R> + Send + 'static;
 
     async fn transaction<R, Func>(&self, f: Func) -> AsyncResult<R>
     where
-        R: Send,
-        Func: FnOnce(&Conn) -> QueryResult<R> + Send;
+        R: Send + 'static,
+        Func: FnOnce(&Conn) -> QueryResult<R> + Send + 'static;
 }
 
 #[async_trait]
@@ -104,27 +105,27 @@ where
     #[inline]
     async fn run<R, Func>(&self, f: Func) -> AsyncResult<R>
     where
-        R: Send,
-        Func: FnOnce(&Conn) -> QueryResult<R> + Send,
+        R: Send + 'static,
+        Func: FnOnce(&Conn) -> QueryResult<R> + Send + 'static,
     {
         let self_ = self.clone();
-        task::block_in_place(move || {
+        web::block(move || {
             let conn = self_.get().map_err(AsyncError::Checkout)?;
             f(&*conn).map_err(AsyncError::Error)
-        })
+        }).await
     }
 
     #[inline]
     async fn transaction<R, Func>(&self, f: Func) -> AsyncResult<R>
     where
-        R: Send,
-        Func: FnOnce(&Conn) -> QueryResult<R> + Send,
+        R: Send + 'static,
+        Func: FnOnce(&Conn) -> QueryResult<R> + Send + 'static,
     {
         let self_ = self.clone();
-        task::block_in_place(move || {
+        web::block(move || {
             let conn = self_.get().map_err(AsyncError::Checkout)?;
             conn.transaction(|| f(&*conn)).map_err(AsyncError::Error)
-        })
+        }).await
     }
 }
 
@@ -139,22 +140,22 @@ where
 
     async fn load_async<U>(self, asc: &AsyncConn) -> AsyncResult<Vec<U>>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LoadQuery<Conn, U>;
 
     async fn get_result_async<U>(self, asc: &AsyncConn) -> AsyncResult<U>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LoadQuery<Conn, U>;
 
     async fn get_results_async<U>(self, asc: &AsyncConn) -> AsyncResult<Vec<U>>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LoadQuery<Conn, U>;
 
     async fn first_async<U>(self, asc: &AsyncConn) -> AsyncResult<U>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LimitDsl,
         Limit<Self>: LoadQuery<Conn, U>;
 }
@@ -162,7 +163,7 @@ where
 #[async_trait]
 impl<T, Conn> AsyncRunQueryDsl<Conn, Pool<ConnectionManager<Conn>>> for T
 where
-    T: Send + RunQueryDsl<Conn>,
+    T: Send + RunQueryDsl<Conn> + 'static,
     Conn: 'static + Connection,
 {
     async fn execute_async(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<usize>
@@ -174,7 +175,7 @@ where
 
     async fn load_async<U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<Vec<U>>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LoadQuery<Conn, U>,
     {
         asc.run(|conn| self.load(&*conn)).await
@@ -182,7 +183,7 @@ where
 
     async fn get_result_async<U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<U>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LoadQuery<Conn, U>,
     {
         asc.run(|conn| self.get_result(&*conn)).await
@@ -190,7 +191,7 @@ where
 
     async fn get_results_async<U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<Vec<U>>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LoadQuery<Conn, U>,
     {
         asc.run(|conn| self.get_results(&*conn)).await
@@ -198,7 +199,7 @@ where
 
     async fn first_async<U>(self, asc: &Pool<ConnectionManager<Conn>>) -> AsyncResult<U>
     where
-        U: Send,
+        U: Send + 'static,
         Self: LimitDsl,
         Limit<Self>: LoadQuery<Conn, U>,
     {
